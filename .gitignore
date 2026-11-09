@@ -1,0 +1,10 @@
+/build/
+/out/
+/.vs/
+/test-assets/*.avi
+/test-assets/*.txt
+/test-assets/*.html
+/test-assets/no-ext*
+*.user
+__pycache__/
+*.pyc
