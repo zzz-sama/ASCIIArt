@@ -224,25 +224,44 @@ ManualFitMode TryManualConsoleFit(int artCols, int artRows, int reservedRows,
     }
 }
 
-int PollPlaybackKey() {
-    // 0 = none, 1 = toggle pause, 2 = quit
+struct PlaybackInput {
+    bool quit = false;
+    bool togglePause = false;
+    int aspectSteps = 0;  // -1 = wider picture, +1 = taller picture
+};
+
+PlaybackInput PollPlaybackInput() {
+    PlaybackInput input;
     while (console::KeyAvailable()) {
         const int key = console::ReadKey();
         if (key == 27 || key == L'q' || key == L'Q') {
-            return 2;
-        }
-        if (key == L' ') {
-            return 1;
+            input.quit = true;
+        } else if (key == L' ') {
+            input.togglePause = true;
+        } else if (key == L'-' || key == L'_' || key == L'[') {
+            --input.aspectSteps;
+        } else if (key == L'+' || key == L'=' || key == L']') {
+            ++input.aspectSteps;
         }
     }
-    return 0;
+    return input;
 }
 
 std::string MakeStatusLine(double position, const VideoInfo& info,
                            bool paused) {
     const int width = console::Width();
     std::string status;
-    if (width >= 62) {
+    if (width >= 78) {
+        status = "  " + FormatTime(position);
+        if (info.duration > 0.0) {
+            status += " / " + FormatTime(info.duration);
+        }
+        status += Tr8("   [Space] Pause   [-/+] Ratio   [Q] Quit",
+                      "   [空格] 暂停   [-/+] 比例   [Q] 退出");
+        if (paused) {
+            status += Tr8("   ** PAUSED **", "   ** 已暂停 **");
+        }
+    } else if (width >= 62) {
         status = "  " + FormatTime(position);
         if (info.duration > 0.0) {
             status += " / " + FormatTime(info.duration);
@@ -292,11 +311,15 @@ void AppendInt(std::wstring& out, int value) {
 void BuildVideoScreen(std::wstring& screen, const AsciiFrame& frame,
                       const std::vector<std::wstring>& glyphs, bool color,
                       int statusRow, const std::wstring& status,
-                      bool compact) {
+                      bool compact, bool clearFirst = false) {
     screen.clear();
     // Synchronized output: the terminal buffers the whole frame and presents
     // it at once, so a frame split into several console writes cannot tear.
     screen += L"\x1b[?2026h";
+    if (clearFirst) {
+        // The grid changed size; drop rows left over from the previous grid.
+        screen += L"\x1b[2J";
+    }
     screen += L"\x1b[H";
     AppendFrameAnsiWide(screen, frame, glyphs, color);
     screen += L"\x1b[0m\x1b[K";
@@ -457,7 +480,8 @@ void PrintCommandLineHelp() {
         "  * Images are decoded by Windows WIC and support PNG / JPEG / BMP / GIF / TIFF and more.\n"
         "  * Videos are decoded by Windows Media Foundation; playback depends on the installed decoders.\n"
         "    MP4 / H.264 / AVI usually work. Audio tracks play through XAudio2.\n"
-        "  * During video playback, Space pauses / resumes and Q or Esc quits.\n"
+        "  * During video playback, Space pauses / resumes, -/+ adjusts the character\n"
+        "    aspect ratio (useful after zooming the terminal), and Q or Esc quits.\n"
         "  * Image previews adapt to the current console size; --no-display is not limited by the window.\n"
         "  * With a fixed --resolution larger than the console, the program tries to temporarily\n"
         "    shrink the font and enlarge the window; if that fails it skips the preview or reports an error.\n"
@@ -510,7 +534,8 @@ void PrintCommandLineHelp() {
         "  * 图片由 Windows WIC 解码，支持 PNG / JPEG / BMP / GIF / TIFF 等常用格式。\n"
         "  * 视频由 Windows Media Foundation 解码，能否播放取决于系统已安装的解码器；\n"
         "    MP4 / H.264 / AVI 通常可以直接使用。视频自带的音频会通过 XAudio2 播放。\n"
-        "  * 播放视频时按空格暂停 / 继续，按 Q 或 Esc 退出。\n"
+        "  * 播放视频时按空格暂停 / 继续，按 -/+ 调整字符宽高比（终端缩放后很有用），\n"
+        "    按 Q 或 Esc 退出。\n"
         "  * 图片预览会自动适配当前控制台大小；--no-display 保存时不受窗口大小限制。\n"
         "  * 使用 --resolution 固定分辨率且大于控制台窗口时，程序会尝试临时\n"
         "    缩小字体、放大窗口；无法调整时会跳过预览或提示错误。\n"
@@ -992,7 +1017,7 @@ bool App::ProcessVideo(const std::wstring& path, bool interactive) {
     }
 
     const bool color = options_.render.color;
-    const int statusRow = grid.rows + 2;
+    int statusRow = grid.rows + 2;
     const int targetFps =
         std::max(1, std::min(120, options_.render.fps));
     const double frameInterval = 1.0 / static_cast<double>(targetFps);
@@ -1053,6 +1078,41 @@ bool App::ProcessVideo(const std::wstring& path, bool interactive) {
     RgbaImage videoFrame;
     AsciiFrame ascii;
 
+    // Track the character grid so terminal zoom (Ctrl+wheel) can be handled.
+    int lastConsoleCols = console::Width();
+    int lastConsoleRows = console::Height();
+
+    // Re-renders the last decoded frame, used after a live aspect change.
+    auto repaint = [&](double position, bool pausedNow, bool clearFirst) {
+        RenderAsciiInto(videoFrame, options_.render.charset, grid,
+                        options_.render, ascii);
+        BuildVideoScreen(screen, ascii, wideGlyphs, color, statusRow,
+                         util::ToWide(MakeStatusLine(position, info, pausedNow)),
+                         compact, clearFirst);
+        writer.Submit(screen);
+    };
+
+    // Terminal zoom (Ctrl+wheel) changes the real cell shape, which a fixed
+    // aspect ratio cannot track; the user can correct it while playing.
+    auto applyAspectSteps = [&](int steps) {
+        double next = options_.render.aspect + steps * 0.02;
+        next = std::max(0.20, std::min(1.00, next));
+        if (next == options_.render.aspect) {
+            return false;
+        }
+        options_.render.aspect = next;
+        const GridSize updated =
+            FitGrid(info.width, info.height, options_.render.width,
+                    options_.render.height, maxCols, maxRows,
+                    options_.render.aspect);
+        if (updated.cols == grid.cols && updated.rows == grid.rows) {
+            return false;
+        }
+        grid = updated;
+        statusRow = grid.rows + 2;
+        return true;
+    };
+
     while (!quit) {
         double pts = 0.0;
         bool eof = false;
@@ -1092,15 +1152,47 @@ bool App::ProcessVideo(const std::wstring& path, bool interactive) {
         }
         const double relative = std::max(0.0, pts - basePts);
 
+        // Terminal zoom changes how many characters fit on screen. Re-fit the
+        // grid so the art keeps fitting instead of scrolling the whole screen.
+        bool gridRefitted = false;
+        {
+            const int cols = console::Width();
+            const int rows = console::Height();
+            if (cols != lastConsoleCols || rows != lastConsoleRows) {
+                lastConsoleCols = cols;
+                lastConsoleRows = rows;
+                if (cols >= 20 && rows >= 8) {
+                    maxCols = std::max(10, cols);
+                    maxRows = std::max(5, rows - (compact ? 0 : 3));
+                    const GridSize updated =
+                        FitGrid(info.width, info.height,
+                                options_.render.width, options_.render.height,
+                                maxCols, maxRows, options_.render.aspect);
+                    if (updated.cols != grid.cols ||
+                        updated.rows != grid.rows) {
+                        grid = updated;
+                        statusRow = grid.rows + 2;
+                        gridRefitted = true;
+                    }
+                }
+            }
+        }
+
         // Skip frames when the source is faster than the requested rate.
         // nextRender is advanced by a fixed interval, so 29.97/60 fps sources
         // are decimated to roughly the requested rate instead of sneaking
         // through one extra frame each time.
         if (relative + 0.0005 < nextRender) {
             player.DiscardFrame();
-            const int key = PollPlaybackKey();
-            if (key == 2) {
+            const PlaybackInput input = PollPlaybackInput();
+            if (input.quit) {
                 quit = true;
+            }
+            if (input.aspectSteps != 0 &&
+                applyAspectSteps(input.aspectSteps)) {
+                repaint(relative, paused, true);
+            } else if (gridRefitted) {
+                repaint(relative, paused, true);
             }
             continue;
         }
@@ -1131,12 +1223,7 @@ bool App::ProcessVideo(const std::wstring& path, bool interactive) {
             break;
         }
 
-        RenderAsciiInto(videoFrame, options_.render.charset, grid,
-                        options_.render, ascii);
-        BuildVideoScreen(screen, ascii, wideGlyphs, color, statusRow,
-                         util::ToWide(MakeStatusLine(relative, info, paused)),
-                         compact);
-        writer.Submit(screen);
+        repaint(relative, paused, gridRefitted);
         if (hasAudio && !audioStarted) {
             std::wstring startError;
             if (audio.Start(startError)) {
@@ -1155,29 +1242,33 @@ bool App::ProcessVideo(const std::wstring& path, bool interactive) {
             nextRender = relative + frameInterval;
         }
 
-        const int key = PollPlaybackKey();
-        if (key == 2) {
+        const PlaybackInput input = PollPlaybackInput();
+        if (input.quit) {
             quit = true;
             break;
         }
-        if (key == 1) {
+        if (input.aspectSteps != 0 &&
+            applyAspectSteps(input.aspectSteps)) {
+            repaint(relative, paused, true);
+        }
+        if (input.togglePause) {
             paused = true;
             pausedAt = Clock::now();
             audio.Pause();
-            BuildVideoScreen(screen, ascii, wideGlyphs, color, statusRow,
-                             util::ToWide(
-                                 MakeStatusLine(relative, info, true)),
-                             compact);
-            writer.Submit(screen);
+            repaint(relative, true, false);
         }
 
         while (paused && !quit) {
-            const int pauseKey = PollPlaybackKey();
-            if (pauseKey == 2) {
+            const PlaybackInput pauseInput = PollPlaybackInput();
+            if (pauseInput.quit) {
                 quit = true;
                 break;
             }
-            if (pauseKey == 1) {
+            if (pauseInput.aspectSteps != 0 &&
+                applyAspectSteps(pauseInput.aspectSteps)) {
+                repaint(relative, true, true);
+            }
+            if (pauseInput.togglePause) {
                 paused = false;
                 start += Clock::now() - pausedAt;
                 audio.Resume();
@@ -1478,15 +1569,16 @@ void App::ShowHelp() {
         "Interactive mode tips:\n"
         "  * Menu 1 opens a file dialog; pick an image to convert it "
         "immediately.\n"
-        "  * Menu 2 plays a selected video; press Space to pause and Q to "
-        "quit.\n"
+        "  * Menu 2 plays a selected video; press Space to pause, -/+ to adjust "
+        "the\n"
+        "    character aspect ratio, and Q to quit.\n"
         "  * After converting an image you are asked whether to save it as "
         "TXT or HTML.\n"
         "  * HTML keeps the colors; TXT is plain character art.\n"
         "\n",
         "交互模式提示:\n"
         "  * 菜单 1 会打开文件选择框，选择图片后立即转换。\n"
-        "  * 菜单 2 选择视频后直接播放；按空格暂停，按 Q 退出。\n"
+        "  * 菜单 2 选择视频后直接播放；按空格暂停，按 -/+ 调整字符宽高比，按 Q 退出。\n"
         "  * 图片转换完成后会询问是否保存为 TXT 或 HTML。\n"
         "  * HTML 文件会保留颜色，TXT 是纯字符画。\n"
         "\n"));

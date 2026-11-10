@@ -224,6 +224,7 @@ Without an extension, the file is saved as `.txt`.
 | Key | Function |
 | --- | --- |
 | `Space` | Pause / resume |
+| `-` / `+` | Adjust the character aspect ratio live (0.20-1.00; useful after zooming the terminal with Ctrl+wheel) |
 | `Q` / `Esc` | Quit playback |
 
 The video's audio track plays along with the picture. Pausing pauses the audio; resuming resumes it; loop playback restarts the audio from the beginning. If there is no audio track or no audio device, the video still plays silently.
