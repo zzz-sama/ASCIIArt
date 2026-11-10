@@ -563,6 +563,9 @@ void AppendFrameAnsiWide(std::wstring& out, const AsciiFrame& frame,
         if (color && haveColor) {
             out += L"\x1b[0m";
         }
+        // Trailing spaces are trimmed, so erase the rest of the line: a longer
+        // previous frame would otherwise leave ghost characters behind.
+        out += L"\x1b[K";
         if (row + 1 < frame.rows) {
             out += L"\r\n";
         }

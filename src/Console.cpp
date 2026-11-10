@@ -235,11 +235,13 @@ void OutWide(const std::wstring& text) {
 
     // Large frames are written in a few big chunks instead of one call per
     // line. WriteConsoleW is thread-safe, so the playback writer thread can
-    // use it directly.
+    // use it directly. Big chunks keep a single frame in as few calls as
+    // possible, which also reduces visible tearing on terminals that do not
+    // support synchronized output.
     std::size_t offset = 0;
     while (offset < text.size()) {
         const DWORD chunk = static_cast<DWORD>(
-            std::min<std::size_t>(32768, text.size() - offset));
+            std::min<std::size_t>(262144, text.size() - offset));
         DWORD written = 0;
         if (!WriteConsoleW(g_stdout, text.data() + offset, chunk, &written,
                            nullptr)) {

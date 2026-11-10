@@ -294,10 +294,14 @@ void BuildVideoScreen(std::wstring& screen, const AsciiFrame& frame,
                       int statusRow, const std::wstring& status,
                       bool compact) {
     screen.clear();
+    // Synchronized output: the terminal buffers the whole frame and presents
+    // it at once, so a frame split into several console writes cannot tear.
+    screen += L"\x1b[?2026h";
     screen += L"\x1b[H";
     AppendFrameAnsiWide(screen, frame, glyphs, color);
     screen += L"\x1b[0m\x1b[K";
     if (compact) {
+        screen += L"\x1b[?2026l";
         return;
     }
     screen += L"\x1b[";
@@ -310,6 +314,7 @@ void BuildVideoScreen(std::wstring& screen, const AsciiFrame& frame,
     if (color) {
         screen += L"\x1b[0m";
     }
+    screen += L"\x1b[?2026l";
 }
 
 // Writes frames on a background thread so decoding and rendering of the next
