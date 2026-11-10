@@ -317,8 +317,10 @@ void BuildVideoScreen(std::wstring& screen, const AsciiFrame& frame,
     // it at once, so a frame split into several console writes cannot tear.
     screen += L"\x1b[?2026h";
     if (clearFirst) {
-        // The grid changed size; drop rows left over from the previous grid.
-        screen += L"\x1b[2J";
+        // The grid changed size; drop rows left over from the previous grid
+        // and any frame that briefly overflowed into the scrollback while the
+        // terminal was being resized.
+        screen += L"\x1b[2J\x1b[3J";
     }
     screen += L"\x1b[H";
     AppendFrameAnsiWide(screen, frame, glyphs, color);
