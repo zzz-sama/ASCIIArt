@@ -10,6 +10,7 @@
 
 #include <cerrno>
 #include <cmath>
+#include <cstdio>
 #include <cwchar>
 #include <exception>
 #include <new>
@@ -23,6 +24,7 @@ struct CommandLine {
     AppOptions app;
     std::wstring input;
     bool help = false;
+    bool probeTerminal = false;
     bool valid = true;
     std::wstring error;
     int colorMode = -1;  // -1 = automatic, 0 = off, 1 = on
@@ -192,6 +194,10 @@ CommandLine ParseCommandLine(int argc, wchar_t** argv) {
             result.app.fitConsole = false;
             continue;
         }
+        if (arg == L"--probe-terminal") {
+            result.probeTerminal = true;
+            continue;
+        }
 
         std::wstring value;
         int take = TakeValue(arg, L"--lang", argc, argv, i, value);
@@ -316,6 +322,7 @@ CommandLine ParseCommandLine(int argc, wchar_t** argv) {
                 return result;
             }
             result.app.render.aspect = aspect;
+            result.app.aspectExplicit = true;
             continue;
         }
 
@@ -470,6 +477,61 @@ int wmain(int argc, wchar_t** argv) {
         // colors when the console supports them; a saved HTML file can still
         // be colored even if stdout is redirected.
         commandLine.app.render.color = commandLine.colorMode != 0;
+
+        if (commandLine.probeTerminal) {
+            console::TerminalMetrics metrics;
+            std::wstring raw;
+            const bool ok = console::ProbeTerminal(metrics, raw);
+            std::string text =
+                Tr8("\n  Terminal probe\n", "\n  终端探测\n");
+            text += Tr8("  Windows Terminal: ",
+                        "  Windows Terminal：") +
+                    (console::IsWindowsTerminalHost() ? Tr8("yes\n", "是\n")
+                                                      : Tr8("no\n", "否\n"));
+            if (ok) {
+                char buffer[512];
+                std::snprintf(
+                    buffer, sizeof(buffer),
+                    Tr8("  Character grid: %d x %d\n"
+                        "  Text area pixels: %d x %d\n"
+                        "  Cell pixels: %d x %d\n"
+                        "  Suggested aspect: %.2f\n",
+                        "  字符网格：%d x %d\n"
+                        "  文本区像素：%d x %d\n"
+                        "  单元格像素：%d x %d\n"
+                        "  建议宽高比：%.2f\n")
+                        .c_str(),
+                    metrics.cols, metrics.rows, metrics.pixelWidth,
+                    metrics.pixelHeight, metrics.cellWidth, metrics.cellHeight,
+                    static_cast<double>(metrics.cellWidth) /
+                        static_cast<double>(metrics.cellHeight));
+                text += buffer;
+            } else {
+                text += Tr8(
+                    "  No response to CSI 18t / 14t / 16t: this terminal does "
+                    "not support the queries, or the program is not running in "
+                    "a real console window.\n",
+                    "  终端未响应 CSI 18t / 14t / 16t：可能不支持这些查询，"
+                    "或当前不在真实控制台窗口中运行。\n");
+            }
+            if (!raw.empty()) {
+                std::wstring visible;
+                for (const wchar_t ch : raw) {
+                    if (ch == L'\x1b') {
+                        visible += L"ESC";
+                    } else if (ch < 0x20) {
+                        visible += L' ';
+                    } else {
+                        visible += ch;
+                    }
+                }
+                text += Tr8("  Raw response: ", "  原始响应：") +
+                        util::ToUtf8(visible) + "\n";
+            }
+            text += "\n";
+            console::Out(text);
+            return ok ? 0 : 1;
+        }
 
         App app(std::move(commandLine.app));
         if (!commandLine.input.empty()) {

@@ -11,6 +11,7 @@
 #include <iostream>
 #include <iterator>
 #include <string>
+#include <vector>
 
 namespace console {
 namespace {
@@ -219,6 +220,116 @@ int Height() {
         return std::max<int>(1, info.srWindow.Bottom - info.srWindow.Top + 1);
     }
     return 40;
+}
+
+bool ProbeTerminal(TerminalMetrics& metrics, std::wstring& raw,
+                   unsigned long timeoutMs) {
+    metrics = {};
+    raw.clear();
+    if (!g_consoleIn || !g_consoleOut || g_stdin == INVALID_HANDLE_VALUE ||
+        g_stdout == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+
+    DWORD originalMode = 0;
+    if (!GetConsoleMode(g_stdin, &originalMode)) {
+        return false;
+    }
+    DWORD mode = originalMode;
+    mode &= ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT);
+    mode |= ENABLE_VIRTUAL_TERMINAL_INPUT;
+    if (!SetConsoleMode(g_stdin, mode)) {
+        return false;
+    }
+
+    // Ask for the text area in characters (18t), in pixels (14t), and for the
+    // cell size in pixels (16t).
+    static const wchar_t kQueries[] = L"\x1b[18t\x1b[14t\x1b[16t";
+    DWORD written = 0;
+    WriteConsoleW(g_stdout, kQueries,
+                  static_cast<DWORD>(std::size(kQueries) - 1), &written,
+                  nullptr);
+
+    std::wstring response;
+    const ULONGLONG start = GetTickCount64();
+    wchar_t buffer[256];
+    while (GetTickCount64() - start < timeoutMs) {
+        if (WaitForSingleObject(g_stdin, 20) != WAIT_OBJECT_0) {
+            continue;
+        }
+        DWORD available = 0;
+        if (GetNumberOfConsoleInputEvents(g_stdin, &available) &&
+            available == 0) {
+            continue;
+        }
+        DWORD read = 0;
+        if (!ReadConsoleW(g_stdin, buffer,
+                          static_cast<DWORD>(std::size(buffer)), &read,
+                          nullptr) ||
+            read == 0) {
+            continue;
+        }
+        response.append(buffer, read);
+        if (response.find(L"[4;") != std::wstring::npos &&
+            response.find(L"[8;") != std::wstring::npos) {
+            break;
+        }
+    }
+    SetConsoleMode(g_stdin, originalMode);
+    raw = response;
+
+    std::vector<int> numbers;
+    for (std::size_t i = 0; i + 1 < response.size(); ++i) {
+        if (response[i] != L'\x1b' || response[i + 1] != L'[') {
+            continue;
+        }
+        std::size_t j = i + 2;
+        numbers.clear();
+        int value = -1;
+        while (j < response.size()) {
+            const wchar_t ch = response[j];
+            if (ch >= L'0' && ch <= L'9') {
+                if (value < 0) {
+                    value = 0;
+                }
+                value = value * 10 + (ch - L'0');
+                ++j;
+            } else if (ch == L';') {
+                numbers.push_back(value);
+                value = -1;
+                ++j;
+            } else {
+                break;
+            }
+        }
+        if (value >= 0) {
+            numbers.push_back(value);
+        }
+        if (j < response.size() && response[j] == L't' &&
+            numbers.size() == 3) {
+            if (numbers[0] == 8 && numbers[1] > 0 && numbers[2] > 0) {
+                metrics.rows = numbers[1];
+                metrics.cols = numbers[2];
+            } else if (numbers[0] == 4) {
+                metrics.pixelHeight = numbers[1];
+                metrics.pixelWidth = numbers[2];
+            } else if (numbers[0] == 6) {
+                metrics.cellHeight = numbers[1];
+                metrics.cellWidth = numbers[2];
+            }
+            i = j;
+        }
+    }
+
+    if (metrics.cols <= 0 || metrics.rows <= 0) {
+        return false;
+    }
+    if ((metrics.cellWidth <= 0 || metrics.cellHeight <= 0) &&
+        metrics.pixelWidth > 0 && metrics.pixelHeight > 0) {
+        metrics.cellWidth = metrics.pixelWidth / metrics.cols;
+        metrics.cellHeight = metrics.pixelHeight / metrics.rows;
+    }
+    return metrics.cellWidth > 0 && metrics.cellHeight > 0;
 }
 
 void Out(const std::string& utf8Text) {

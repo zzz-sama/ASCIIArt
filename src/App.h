@@ -8,6 +8,7 @@ struct AppOptions {
     RenderOptions render;
     bool noDisplay = false;
     bool fitConsole = true;  // temporarily shrink font / enlarge window if needed
+    bool aspectExplicit = false;  // user picked an aspect; do not auto-measure
     std::wstring savePath;
 
     AppOptions();

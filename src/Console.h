@@ -53,6 +53,23 @@ bool InputEnded();
 bool KeyAvailable();
 int ReadKey();  // returns 0 for extended keys, otherwise the character
 
+// Measurements reported by the terminal for the current text area.
+struct TerminalMetrics {
+    int cols = 0;
+    int rows = 0;
+    int pixelWidth = 0;
+    int pixelHeight = 0;
+    int cellWidth = 0;
+    int cellHeight = 0;
+};
+
+// Asks the terminal for its text-area size using the xterm window
+// manipulation queries (CSI 18 t / CSI 14 t / CSI 16 t). Returns false when
+// stdin/stdout is not a console or the terminal does not answer. `raw`
+// receives the unparsed response for diagnostics.
+bool ProbeTerminal(TerminalMetrics& metrics, std::wstring& raw,
+                   unsigned long timeoutMs = 600);
+
 // Temporarily disables automatic wrap at end-of-line. This lets a line that
 // exactly fills the console width be printed one row at a time without the
 // terminal inserting an extra line.

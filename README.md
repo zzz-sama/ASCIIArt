@@ -102,7 +102,7 @@ ASCIIArt <file> [options]             convert / play with options
 | `-c, --color` | Use 24-bit true color |
 | `--no-color` | Disable color |
 | `-i, --invert` | Invert brightness |
-| `-a, --aspect <x>` | Character aspect ratio, default `0.50`, range `0.20-1.00` |
+| `-a, --aspect <x>` | Character aspect ratio, range `0.20-1.00`. Measured from the terminal when it supports the xterm queries, otherwise `0.50` |
 | `-g, --gamma <x>` | Gamma correction, default `1.0`; `>1` darker, `<1` brighter |
 | `-f, --fps <n>` | Video frame-rate cap, default 24, range `1-120` |
 | `-l, --loop` | Loop the video |
@@ -110,6 +110,7 @@ ASCIIArt <file> [options]             convert / play with options
 | `--no-display` | Save only; do not show image art in the console |
 | `--fit` | Shrink the font / enlarge the window for large resolutions (default) |
 | `--no-fit` | Never change the font or window |
+| `--probe-terminal` | Print the terminal's character-grid / pixel / cell size and the measured aspect (diagnostics) |
 | `--charset <chars>` | Custom charset (dark to light), or a preset name |
 | `--preset <name>` | Charset preset: `standard` / `detailed` / `blocks` / `minimal` |
 | `--lang <en\|zh>` | Interface language; defaults to the system UI language, falling back to `en` for other languages |

@@ -143,6 +143,22 @@ bool AskYesNo(const std::string& prompt) {
            util::EqualsIgnoreCase(answer, L"是");
 }
 
+// Asks the terminal for the real character cell size and converts it to the
+// aspect ratio used by the renderer. Windows Terminal answers the xterm
+// queries; terminals without support time out and keep the caller's value.
+bool TryMeasureAspect(double& aspect) {
+    console::TerminalMetrics metrics;
+    std::wstring raw;
+    if (!console::ProbeTerminal(metrics, raw, 250)) {
+        return false;
+    }
+    const double measured =
+        static_cast<double>(metrics.cellWidth) /
+        static_cast<double>(metrics.cellHeight);
+    aspect = std::max(0.20, std::min(1.00, measured));
+    return true;
+}
+
 enum class ManualFitMode { None, Normal, Compact, SaveOnly, Cancel };
 
 // Last-resort fallback when the console API cannot resize the terminal, most
@@ -457,7 +473,7 @@ void PrintCommandLineHelp() {
         "  -c, --color           use 24-bit true color\n"
         "      --no-color        disable color\n"
         "  -i, --invert          invert brightness\n"
-        "  -a, --aspect <x>      character aspect ratio, default 0.50 (terminal chars are about twice as tall as wide)\n"
+        "  -a, --aspect <x>      character aspect ratio; measured from the terminal when supported, 0.50 fallback\n"
         "  -g, --gamma <x>       gamma correction, default 1.0; >1 darker, <1 brighter\n"
         "  -f, --fps <n>         video playback frame-rate cap, default 24, range 1-120\n"
         "  -l, --loop            loop the video\n"
@@ -465,6 +481,7 @@ void PrintCommandLineHelp() {
         "      --no-display      save only, do not display image art\n"
         "      --fit             shrink font / enlarge window for large resolutions (default)\n"
         "      --no-fit          never change the font or window\n"
+        "      --probe-terminal  report the terminal's character cell size (diagnostics)\n"
         "      --charset <chars> custom charset (dark to light), or a preset name\n"
         "      --preset <name>   charset preset: standard / detailed / blocks / minimal\n"
         "      --lang <en|zh>    interface language (default: system language, English fallback)\n"
@@ -511,7 +528,7 @@ void PrintCommandLineHelp() {
         "  -c, --color           使用 24 位真彩色\n"
         "      --no-color        不使用颜色\n"
         "  -i, --invert          反转亮度\n"
-        "  -a, --aspect <x>      字符宽高比，默认 0.50（终端字符通常高约为宽的两倍）\n"
+        "  -a, --aspect <x>      字符宽高比；终端支持时自动测量，默认 0.50\n"
         "  -g, --gamma <x>       伽马校正，默认 1.0；大于 1 更暗，小于 1 更亮\n"
         "  -f, --fps <n>         视频播放帧率上限，默认 24，范围 1-120\n"
         "  -l, --loop            循环播放视频\n"
@@ -519,6 +536,7 @@ void PrintCommandLineHelp() {
         "      --no-display      只保存，不显示图片字符画\n"
         "      --fit             大分辨率时自动缩小字体/放大窗口（默认开启）\n"
         "      --no-fit          禁止自动调整字体和窗口\n"
+        "      --probe-terminal  查询终端的字符单元格尺寸（诊断用）\n"
         "      --charset <字符>  自定义字符集（从暗到亮），也可填预设名\n"
         "      --preset <名称>   字符集预设：standard / detailed / blocks / minimal\n"
         "      --lang <en|zh>    界面语言（默认跟随系统，非中/英时回退 en）\n"
@@ -670,6 +688,15 @@ bool App::ProcessImage(const std::wstring& path, bool interactive) {
         options_.render.width > 0 && options_.render.height > 0;
     const bool explicitSize =
         options_.render.width > 0 || options_.render.height > 0;
+
+    // Match the terminal's real character cell unless the user chose a ratio.
+    if (display && console::IsConsole() && !options_.aspectExplicit) {
+        double measured = 0.0;
+        if (TryMeasureAspect(measured)) {
+            options_.render.aspect = measured;
+        }
+    }
+
     const GridSize desired =
         DesiredGrid(image.width, image.height, options_.render.width,
                     options_.render.height, options_.render.aspect);
@@ -954,6 +981,15 @@ bool App::ProcessVideo(const std::wstring& path, bool interactive) {
         options_.render.width > 0 && options_.render.height > 0;
     const bool explicitSize =
         options_.render.width > 0 || options_.render.height > 0;
+
+    // Match the terminal's real character cell unless the user chose a ratio.
+    if (!options_.aspectExplicit) {
+        double measured = 0.0;
+        if (TryMeasureAspect(measured)) {
+            options_.render.aspect = measured;
+        }
+    }
+
     const GridSize desired =
         DesiredGrid(info.width, info.height, options_.render.width,
                     options_.render.height, options_.render.aspect);
@@ -1103,6 +1139,7 @@ bool App::ProcessVideo(const std::wstring& path, bool interactive) {
             return false;
         }
         options_.render.aspect = next;
+        options_.aspectExplicit = true;
         const GridSize updated =
             FitGrid(info.width, info.height, options_.render.width,
                     options_.render.height, maxCols, maxRows,
@@ -1166,6 +1203,15 @@ bool App::ProcessVideo(const std::wstring& path, bool interactive) {
                 if (cols >= 20 && rows >= 8) {
                     maxCols = std::max(10, cols);
                     maxRows = std::max(5, rows - (compact ? 0 : 3));
+                    // Zooming also changes the real cell shape in Windows
+                    // Terminal, so re-measure it before fitting the grid.
+                    if (!options_.aspectExplicit &&
+                        console::IsWindowsTerminalHost()) {
+                        double measured = 0.0;
+                        if (TryMeasureAspect(measured)) {
+                            options_.render.aspect = measured;
+                        }
+                    }
                     const GridSize updated =
                         FitGrid(info.width, info.height,
                                 options_.render.width, options_.render.height,
@@ -1473,6 +1519,7 @@ void App::ShowSettings() {
             double value = 0.0;
             if (ParseDouble(input, value) && value >= 0.2 && value <= 1.0) {
                 options_.render.aspect = value;
+                options_.aspectExplicit = true;
             } else {
                 console::Info(Tr8(
                     "  Invalid input; the aspect ratio is unchanged.\n",
