@@ -49,7 +49,8 @@ GridSize DesiredGrid(int sourceWidth, int sourceHeight, int requestedWidth,
 
 // Chooses the character grid that fits maxCols x maxRows. When both requested
 // dimensions are non-zero and fit, they are kept exactly; otherwise the
-// remaining dimension is derived from the source aspect.
+// remaining dimension is derived from the source aspect. Automatic size fills
+// the available window (100 columns when the caller has no window limit).
 GridSize FitGrid(int sourceWidth, int sourceHeight, int requestedWidth,
                  int requestedHeight, int maxCols, int maxRows, double aspect);
 
@@ -78,3 +79,10 @@ std::vector<std::wstring> WideGlyphs(const Charset& charset);
 // for every video frame.
 void AppendFrameAnsiWide(std::wstring& out, const AsciiFrame& frame,
                          const std::vector<std::wstring>& glyphs, bool color);
+
+// Appends a single row as UTF-16 ANSI without a cursor position or newline.
+// Each row is self-contained (color state is reset at its start), so the video
+// player can address rows absolutely and skip rows that did not change.
+void AppendFrameRowAnsiWide(std::wstring& out, const AsciiFrame& frame,
+                            const std::vector<std::wstring>& glyphs,
+                            bool color, int row);

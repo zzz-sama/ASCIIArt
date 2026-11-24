@@ -96,7 +96,7 @@ ASCIIArt <file> [options]             convert / play with options
 
 | Option | Description |
 | --- | --- |
-| `-w, --width <n>` | Target width in character columns. `0` or omitted = auto (default 100); the program tries to fit oversized output automatically |
+| `-w, --width <n>` | Target width in character columns. `0` or omitted = auto: fills the terminal (100 columns when saving without display); oversized explicit output is fitted automatically |
 | `--height <n>` | Target height in character rows. Omitted or `0` = derived from width and aspect ratio |
 | `-r, --resolution <w>x<h>` | Fixed character-grid resolution, e.g. `120x40`; also `120x0` (width only) and `0x40` (height only) |
 | `-c, --color` | Use 24-bit true color |
@@ -230,12 +230,15 @@ Without an extension, the file is saved as `.txt`.
 
 The video's audio track plays along with the picture. Pausing pauses the audio; resuming resumes it; loop playback restarts the audio from the beginning. If there is no audio track or no audio device, the video still plays silently.
 
+Decoding runs on a background thread and stays a few frames ahead, so it overlaps with pacing and console output; skipped frames never pay for color conversion. When the terminal cannot keep up with the target rate, late frames are dropped so the picture stays aligned with the audio instead of drifting further behind.
+
 ## Implementation notes
 
 | Module | Technology |
 | --- | --- |
 | Image decoding | Windows Imaging Component (WIC), normalized to 32bpp RGBA |
 | Video decoding | Media Foundation Source Reader, NV12 preferred, RGB32 / RGB24 fallback |
+| Decode-ahead | Dedicated worker thread, bounded 4-frame queue; skipped frames are not converted |
 | Video scaling | Downsampled directly to the 2× character grid while reading, skipping full-resolution RGBA conversion and copies |
 | Audio decoding/playback | Media Foundation streaming decode to PCM, XAudio2 playback, ~16 MB buffer only |
 | Scaling/sampling | Area sampling of source pixels per character cell |

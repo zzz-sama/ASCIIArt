@@ -499,7 +499,14 @@ int ReadKey() {
     }
     const int ch = _getch();
     if (ch == 0 || ch == 224) {
-        _getch();  // consume the second byte of an extended key
+        const int scan = _getch();  // second byte of an extended key
+        // Numpad +/- with NumLock off arrive as extended keys.
+        if (scan == 0x4A) {
+            return L'-';
+        }
+        if (scan == 0x4E) {
+            return L'+';
+        }
         return 0;
     }
     return ch;

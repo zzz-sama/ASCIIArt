@@ -264,7 +264,7 @@ PlaybackInput PollPlaybackInput() {
 }
 
 std::string MakeStatusLine(double position, const VideoInfo& info,
-                           bool paused) {
+                           bool paused, double aspect) {
     const int width = console::Width();
     std::string status;
     if (width >= 78) {
@@ -272,8 +272,10 @@ std::string MakeStatusLine(double position, const VideoInfo& info,
         if (info.duration > 0.0) {
             status += " / " + FormatTime(info.duration);
         }
-        status += Tr8("   [Space] Pause   [-/+] Ratio   [Q] Quit",
-                      "   [空格] 暂停   [-/+] 比例   [Q] 退出");
+        status += Tr8("   [Space] Pause   [-/+] Ratio ",
+                      "   [空格] 暂停   [-/+] 比例 ") +
+                  util::Number(aspect, 2) +
+                  Tr8("   [Q] Quit", "   [Q] 退出");
         if (paused) {
             status += Tr8("   ** PAUSED **", "   ** 已暂停 **");
         }
@@ -327,7 +329,9 @@ void AppendInt(std::wstring& out, int value) {
 void BuildVideoScreen(std::wstring& screen, const AsciiFrame& frame,
                       const std::vector<std::wstring>& glyphs, bool color,
                       int statusRow, const std::wstring& status,
-                      bool compact, bool clearFirst = false) {
+                      bool compact, bool clearFirst,
+                      std::vector<std::wstring>& rowCache,
+                      std::wstring& statusCache) {
     screen.clear();
     // Synchronized output: the terminal buffers the whole frame and presents
     // it at once, so a frame split into several console writes cannot tear.
@@ -338,22 +342,38 @@ void BuildVideoScreen(std::wstring& screen, const AsciiFrame& frame,
         // terminal was being resized.
         screen += L"\x1b[2J\x1b[3J";
     }
-    screen += L"\x1b[H";
-    AppendFrameAnsiWide(screen, frame, glyphs, color);
-    screen += L"\x1b[0m\x1b[K";
-    if (compact) {
-        screen += L"\x1b[?2026l";
-        return;
+    if (rowCache.size() != static_cast<std::size_t>(frame.rows)) {
+        rowCache.assign(static_cast<std::size_t>(frame.rows), std::wstring());
     }
-    screen += L"\x1b[";
-    AppendInt(screen, statusRow);
-    screen += L";1H\x1b[2K";
-    if (color) {
-        screen += L"\x1b[90m";
+
+    // Only rows whose ANSI text changed are sent. Static backgrounds (common
+    // in animation) then cost almost nothing, which directly reduces the data
+    // the terminal has to parse and the chance of a visible half-update.
+    std::wstring rowText;
+    for (int row = 0; row < frame.rows; ++row) {
+        rowText.clear();
+        AppendFrameRowAnsiWide(rowText, frame, glyphs, color, row);
+        if (!clearFirst && rowText == rowCache[row]) {
+            continue;
+        }
+        screen += L"\x1b[";
+        AppendInt(screen, row + 1);
+        screen += L";1H";
+        screen += rowText;
+        rowCache[row].swap(rowText);
     }
-    screen += status;
-    if (color) {
-        screen += L"\x1b[0m";
+    if (!compact && (clearFirst || status != statusCache)) {
+        statusCache = status;
+        screen += L"\x1b[";
+        AppendInt(screen, statusRow);
+        screen += L";1H\x1b[2K";
+        if (color) {
+            screen += L"\x1b[90m";
+        }
+        screen += status;
+        if (color) {
+            screen += L"\x1b[0m";
+        }
     }
     screen += L"\x1b[?2026l";
 }
@@ -464,8 +484,8 @@ void PrintCommandLineHelp() {
         "  ASCIIArt <file> [options]             convert / play with options\n"
         "\n"
         "Options:\n"
-        "  -w, --width <n>       target width in character columns; 0 or omitted = auto, default 100;\n"
-        "                        the program tries to shrink the font / enlarge the window if too large\n"
+        "  -w, --width <n>       target width in character columns; 0 or omitted = auto,\n"
+        "                        which fills the terminal (100 columns when saving only)\n"
         "      --height <n>      target height in character rows; omitted or 0 = derived from width\n"
         "  -r, --resolution <w>x<h>\n"
         "                        fixed output resolution (columns x rows), e.g. 120x40;\n"
@@ -519,8 +539,8 @@ void PrintCommandLineHelp() {
         "  ASCIIArt <文件> [选项]                指定参数转换 / 播放\n"
         "\n"
         "选项:\n"
-        "  -w, --width <n>       目标宽度（字符列数），0 或省略为自动，默认 100；\n"
-        "                        超出窗口时会尝试自动缩小字体/放大窗口\n"
+        "  -w, --width <n>       目标宽度（字符列数），0 或省略为自动，\n"
+        "                        自动时占满终端（仅保存时为 100 列）\n"
         "      --height <n>      目标高度（字符行数），省略或 0 时按宽度自动计算\n"
         "  -r, --resolution <w>x<h>\n"
         "                        固定输出分辨率（列x行），例如 120x40；\n"
@@ -962,7 +982,7 @@ bool App::ProcessVideo(const std::wstring& path, bool interactive) {
         return false;
     }
 
-    VideoPlayer player;
+    VideoPrefetcher player;
     std::wstring error;
     if (!player.Open(path, error)) {
         ReportError(error, interactive);
@@ -1060,12 +1080,6 @@ bool App::ProcessVideo(const std::wstring& path, bool interactive) {
         std::max(1, std::min(120, options_.render.fps));
     const double frameInterval = 1.0 / static_cast<double>(targetFps);
 
-    // Decode/scale to 2x the character grid. Media Foundation can scale before
-    // the frame is copied to the CPU, which is the main win for
-    // high-resolution video; software downsampling is the fallback.
-    player.SetTargetSize(std::max(1, grid.cols * 2),
-                         std::max(1, grid.rows * 2));
-
     const long long cellCount =
         static_cast<long long>(grid.cols) * grid.rows;
     if (cellCount > 1000000 && console::IsInputConsole()) {
@@ -1081,6 +1095,13 @@ bool App::ProcessVideo(const std::wstring& path, bool interactive) {
             return false;
         }
     }
+
+    // Decode/scale to 2x the character grid. Media Foundation can scale before
+    // the frame is copied to the CPU, which is the main win for
+    // high-resolution video; software downsampling is the fallback. The
+    // prefetcher now starts decoding ahead on its worker thread.
+    player.Configure(std::max(1, grid.cols * 2), std::max(1, grid.rows * 2),
+                     frameInterval, options_.render.loop);
 
     // Keep the window at the size the grid was computed for during playback.
     console::LockWindowResize lockResize;
@@ -1107,7 +1128,8 @@ bool App::ProcessVideo(const std::wstring& path, bool interactive) {
     bool paused = false;
     bool completed = false;
     double basePts = -1.0;
-    double nextRender = 0.0;
+    double lastPts = -1.0;
+    bool pendingClear = false;
     Clock::time_point start = Clock::now();
     Clock::time_point pausedAt = Clock::now();
 
@@ -1120,13 +1142,19 @@ bool App::ProcessVideo(const std::wstring& path, bool interactive) {
     int lastConsoleCols = console::Width();
     int lastConsoleRows = console::Height();
 
+    // Cache of the last written ANSI text per row and of the status line, so
+    // unchanged rows are not sent to the terminal again.
+    std::vector<std::wstring> rowCache;
+    std::wstring statusCache;
+
     // Re-renders the last decoded frame, used after a live aspect change.
     auto repaint = [&](double position, bool pausedNow, bool clearFirst) {
         RenderAsciiInto(videoFrame, options_.render.charset, grid,
                         options_.render, ascii);
         BuildVideoScreen(screen, ascii, wideGlyphs, color, statusRow,
-                         util::ToWide(MakeStatusLine(position, info, pausedNow)),
-                         compact, clearFirst);
+                         util::ToWide(MakeStatusLine(position, info, pausedNow,
+                                                     options_.render.aspect)),
+                         compact, clearFirst, rowCache, statusCache);
         writer.Submit(screen);
     };
 
@@ -1144,52 +1172,71 @@ bool App::ProcessVideo(const std::wstring& path, bool interactive) {
             FitGrid(info.width, info.height, options_.render.width,
                     options_.render.height, maxCols, maxRows,
                     options_.render.aspect);
-        if (updated.cols == grid.cols && updated.rows == grid.rows) {
-            return false;
+        // Repaint even when the grid size does not change, so the status line
+        // always shows the new ratio (e.g. when a fixed size clamps the grid).
+        if (updated.cols != grid.cols || updated.rows != grid.rows) {
+            grid = updated;
+            statusRow = grid.rows + 2;
         }
-        grid = updated;
-        statusRow = grid.rows + 2;
         return true;
     };
 
     while (!quit) {
-        double pts = 0.0;
-        bool eof = false;
-        if (!player.ReadFrame(pts, eof, error)) {
-            audio.Stop();
-            writer.Stop();
-            console::HideCursor(false);
-            console::Clear();
-            ReportError(error, interactive);
-            return false;
-        }
-
-        if (eof) {
-            if (options_.render.loop) {
-                if (!player.Rewind(error)) {
-                    audio.Stop();
-                    writer.Stop();
-                    console::HideCursor(false);
-                    console::Clear();
-                    ReportError(error, interactive);
-                    return false;
-                }
+        // The prefetcher decodes ahead on its own thread; this thread only
+        // paces, converts to ASCII and writes the screen.
+        VideoPrefetcher::Frame decoded;
+        bool ended = false;
+        std::wstring popError;
+        if (!player.TryPop(decoded, ended, popError, 20)) {
+            if (!popError.empty()) {
                 audio.Stop();
-                audioStarted = false;
-                basePts = -1.0;
-                nextRender = 0.0;
-                start = Clock::now();
-                continue;
+                writer.Stop();
+                console::HideCursor(false);
+                console::Clear();
+                ReportError(popError, interactive);
+                return false;
             }
-            completed = true;
-            break;
+            if (ended) {
+                completed = true;
+                break;
+            }
+            // Still buffering: keep the keys responsive.
+            const PlaybackInput input = PollPlaybackInput();
+            if (input.quit) {
+                quit = true;
+                break;
+            }
+            if (input.aspectSteps != 0 &&
+                applyAspectSteps(input.aspectSteps)) {
+                repaint(basePts < 0.0 ? 0.0 : lastPts - basePts, paused,
+                        true);
+            }
+            continue;
         }
 
-        if (basePts < 0.0) {
+        const double pts = decoded.pts;
+        if (basePts < 0.0 || (lastPts >= 0.0 && pts + 0.001 < lastPts)) {
+            const bool restarted = basePts >= 0.0;
             basePts = pts;
             start = Clock::now();
+            if (restarted) {
+                // The prefetcher looped the video.
+                audio.Stop();
+                audioStarted = false;
+            }
         }
+        lastPts = pts;
         const double relative = std::max(0.0, pts - basePts);
+
+        const Clock::time_point target =
+            start + std::chrono::duration_cast<Clock::duration>(
+                        std::chrono::duration<double>(relative));
+        // If the console cannot keep up, drop this frame instead of letting
+        // the picture drift further behind the audio every frame.
+        const auto lateTolerance =
+            std::chrono::duration_cast<Clock::duration>(
+                std::chrono::duration<double>(frameInterval));
+        const bool late = Clock::now() > target + lateTolerance;
 
         // Terminal zoom changes how many characters fit on screen. Re-fit the
         // grid so the art keeps fitting instead of scrolling the whole screen.
@@ -1225,69 +1272,39 @@ bool App::ProcessVideo(const std::wstring& path, bool interactive) {
                 }
             }
         }
-
-        // Skip frames when the source is faster than the requested rate.
-        // nextRender is advanced by a fixed interval, so 29.97/60 fps sources
-        // are decimated to roughly the requested rate instead of sneaking
-        // through one extra frame each time.
-        if (relative + 0.0005 < nextRender) {
-            player.DiscardFrame();
-            const PlaybackInput input = PollPlaybackInput();
-            if (input.quit) {
-                quit = true;
-            }
-            if (input.aspectSteps != 0 &&
-                applyAspectSteps(input.aspectSteps)) {
-                repaint(relative, paused, true);
-            } else if (gridRefitted) {
-                repaint(relative, paused, true);
-            }
-            continue;
+        if (gridRefitted) {
+            pendingClear = true;
         }
 
-        // Convert only the frames that are actually shown; frame skipping
-        // above never pays for the NV12/RGB to RGBA conversion.
-        if (!player.DecodeFrame(videoFrame, error)) {
-            audio.Stop();
-            writer.Stop();
-            console::HideCursor(false);
-            console::Clear();
-            ReportError(error, interactive);
-            return false;
-        }
-
-        const Clock::time_point target =
-            start + std::chrono::duration_cast<Clock::duration>(
-                        std::chrono::duration<double>(relative));
-        while (Clock::now() < target) {
-            const auto remaining = target - Clock::now();
-            if (remaining > std::chrono::milliseconds(2)) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            } else {
-                std::this_thread::yield();
+        if (!late) {
+            videoFrame = std::move(decoded.image);
+            while (Clock::now() < target) {
+                const auto remaining = target - Clock::now();
+                if (remaining > std::chrono::milliseconds(2)) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                } else {
+                    std::this_thread::yield();
+                }
             }
-        }
-        if (quit) {
-            break;
-        }
-
-        repaint(relative, paused, gridRefitted);
-        if (hasAudio && !audioStarted) {
-            std::wstring startError;
-            if (audio.Start(startError)) {
-                audioStarted = true;
-            } else {
-                hasAudio = false;
-                audioError = startError.empty()
-                                 ? std::wstring(Tr(L"Cannot start audio "
-                                                   L"playback.",
-                                                   L"无法启动音频播放。"))
-                                 : startError;
+            if (quit) {
+                break;
             }
-        }
-        nextRender += frameInterval;
-        if (nextRender <= relative) {
-            nextRender = relative + frameInterval;
+
+            repaint(relative, paused, pendingClear);
+            pendingClear = false;
+            if (hasAudio && !audioStarted) {
+                std::wstring startError;
+                if (audio.Start(startError)) {
+                    audioStarted = true;
+                } else {
+                    hasAudio = false;
+                    audioError = startError.empty()
+                                     ? std::wstring(Tr(L"Cannot start audio "
+                                                       L"playback.",
+                                                       L"无法启动音频播放。"))
+                                     : startError;
+                }
+            }
         }
 
         const PlaybackInput input = PollPlaybackInput();
@@ -1327,6 +1344,7 @@ bool App::ProcessVideo(const std::wstring& path, bool interactive) {
         }
     }
 
+    player.Stop();
     audio.Stop();
     writer.Stop();  // writes any queued frame before the screen is cleared
     console::HideCursor(false);

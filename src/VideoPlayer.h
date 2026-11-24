@@ -7,7 +7,11 @@
 #include <mfreadwrite.h>
 #include <wrl/client.h>
 
+#include <condition_variable>
+#include <deque>
+#include <mutex>
 #include <string>
+#include <thread>
 
 struct VideoInfo {
     int width = 0;
@@ -74,4 +78,56 @@ private:
     int frameHeight_ = 0;
     int targetWidth_ = 0;
     int targetHeight_ = 0;
+};
+
+// Decodes ahead on a worker thread so decoding overlaps with pacing, tone
+// mapping and console output. The Source Reader is created and used only on
+// that thread; the caller receives display-ready frames in playback order.
+class VideoPrefetcher {
+public:
+    struct Frame {
+        RgbaImage image;
+        double pts = 0.0;
+    };
+
+    VideoPrefetcher() = default;
+    ~VideoPrefetcher();
+    VideoPrefetcher(const VideoPrefetcher&) = delete;
+    VideoPrefetcher& operator=(const VideoPrefetcher&) = delete;
+
+    // Opens the file on the worker thread and waits for its metadata.
+    bool Open(const std::wstring& path, std::wstring& error);
+
+    // Sets the decode size and frame interval, then starts producing frames.
+    // Frames that fall between display slots are discarded before decoding.
+    void Configure(int targetWidth, int targetHeight, double interval,
+                   bool loop);
+
+    // Waits up to timeoutMs for the next frame. Returns false on timeout or
+    // when production stopped; `ended` distinguishes the two.
+    bool TryPop(Frame& frame, bool& ended, std::wstring& error, int timeoutMs);
+
+    void Stop();
+
+    const VideoInfo& Info() const { return info_; }
+
+private:
+    void Run(std::wstring path);
+
+    mutable std::mutex mutex_;
+    std::condition_variable ready_;
+    std::condition_variable space_;
+    std::deque<Frame> queue_;
+    std::thread worker_;
+    VideoInfo info_{};
+    std::wstring openError_;
+    std::wstring error_;
+    int targetWidth_ = 0;
+    int targetHeight_ = 0;
+    double interval_ = 1.0 / 24.0;
+    bool loop_ = false;
+    bool opened_ = false;
+    bool configured_ = false;
+    bool stop_ = false;
+    bool ended_ = false;
 };

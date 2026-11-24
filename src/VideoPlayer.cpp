@@ -4,8 +4,10 @@
 #include "Util.h"
 
 #include <mferror.h>
+#include <objbase.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <utility>
 #include <cstring>
@@ -810,4 +812,195 @@ bool VideoPlayer::Rewind(std::wstring& error) {
         return false;
     }
     return true;
+}
+
+VideoPrefetcher::~VideoPrefetcher() { Stop(); }
+
+bool VideoPrefetcher::Open(const std::wstring& path, std::wstring& error) {
+    error.clear();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        info_ = {};
+        openError_.clear();
+        error_.clear();
+        queue_.clear();
+        opened_ = false;
+        configured_ = false;
+        stop_ = false;
+        ended_ = false;
+    }
+    worker_ = std::thread(&VideoPrefetcher::Run, this, path);
+
+    std::unique_lock<std::mutex> lock(mutex_);
+    ready_.wait(lock, [this] { return opened_; });
+    if (!openError_.empty()) {
+        error = openError_;
+        lock.unlock();
+        Stop();
+        return false;
+    }
+    return true;
+}
+
+void VideoPrefetcher::Configure(int targetWidth, int targetHeight,
+                                double interval, bool loop) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        targetWidth_ = targetWidth;
+        targetHeight_ = targetHeight;
+        interval_ = interval > 0.0 ? interval : 1.0 / 24.0;
+        loop_ = loop;
+        configured_ = true;
+    }
+    ready_.notify_all();
+}
+
+bool VideoPrefetcher::TryPop(Frame& frame, bool& ended, std::wstring& error,
+                             int timeoutMs) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    ended = false;
+    error.clear();
+    ready_.wait_for(lock, std::chrono::milliseconds(timeoutMs), [this] {
+        return !queue_.empty() || ended_ || !error_.empty() || stop_;
+    });
+    if (!error_.empty()) {
+        error = error_;
+    }
+    if (queue_.empty()) {
+        ended = ended_ || stop_ || !error_.empty();
+        return false;
+    }
+    frame = std::move(queue_.front());
+    queue_.pop_front();
+    space_.notify_all();
+    return true;
+}
+
+void VideoPrefetcher::Stop() {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stop_ = true;
+    }
+    ready_.notify_all();
+    space_.notify_all();
+    if (worker_.joinable()) {
+        worker_.join();
+    }
+}
+
+void VideoPrefetcher::Run(std::wstring path) {
+    // The Source Reader lives on this thread only, so all Media Foundation
+    // calls stay on the thread that created them.
+    const HRESULT comResult = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+
+    VideoPlayer player;
+    std::wstring error;
+    const bool opened = player.Open(path, error);
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        opened_ = true;
+        if (opened) {
+            info_ = player.Info();
+        } else {
+            openError_ = error;
+        }
+    }
+    ready_.notify_all();
+
+    if (opened) {
+        int targetWidth = 0;
+        int targetHeight = 0;
+        double interval = 1.0 / 24.0;
+        bool loop = false;
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            ready_.wait(lock, [this] { return configured_ || stop_; });
+            targetWidth = targetWidth_;
+            targetHeight = targetHeight_;
+            interval = interval_;
+            loop = loop_;
+        }
+
+        constexpr std::size_t kQueueCapacity = 4;
+        bool failed = false;
+        if (!stop_) {
+            player.SetTargetSize(targetWidth, targetHeight);
+
+            double basePts = -1.0;
+            double nextDisplay = 0.0;
+            for (;;) {
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    if (stop_) {
+                        break;
+                    }
+                }
+
+                double pts = 0.0;
+                bool eof = false;
+                if (!player.ReadFrame(pts, eof, error)) {
+                    failed = true;
+                    break;
+                }
+                if (eof) {
+                    if (!loop) {
+                        break;
+                    }
+                    if (!player.Rewind(error)) {
+                        failed = true;
+                        break;
+                    }
+                    basePts = -1.0;
+                    nextDisplay = 0.0;
+                    continue;
+                }
+
+                if (basePts < 0.0) {
+                    basePts = pts;
+                }
+                const double relative = std::max(0.0, pts - basePts);
+                if (relative + 0.0005 < nextDisplay) {
+                    player.DiscardFrame();
+                    continue;
+                }
+
+                Frame frame;
+                if (!player.DecodeFrame(frame.image, error)) {
+                    failed = true;
+                    break;
+                }
+                frame.pts = pts;
+                {
+                    std::unique_lock<std::mutex> lock(mutex_);
+                    space_.wait(lock, [this] {
+                        return queue_.size() < kQueueCapacity || stop_;
+                    });
+                    if (stop_) {
+                        break;
+                    }
+                    queue_.push_back(std::move(frame));
+                }
+                ready_.notify_all();
+
+                nextDisplay += interval;
+                if (nextDisplay <= relative) {
+                    nextDisplay = relative + interval;
+                }
+            }
+        }
+
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (failed) {
+            error_ = error;
+        }
+        ended_ = true;
+    } else {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ended_ = true;
+    }
+    ready_.notify_all();
+
+    if (SUCCEEDED(comResult)) {
+        CoUninitialize();
+    }
 }

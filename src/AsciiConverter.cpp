@@ -216,7 +216,16 @@ GridSize FitGrid(int sourceWidth, int sourceHeight, int requestedWidth,
             rows = std::min(rows, maxRows);
         }
     } else {
-        cols = std::min(100, maxCols);
+        // Automatic size: use the largest grid that fits the available window
+        // while keeping the source aspect ratio. When the caller has no real
+        // window limit (save-only), keep the 100-column default instead of
+        // attempting an enormous allocation.
+        constexpr int kUnlimitedWindow = 1000000;
+        if (maxCols >= kUnlimitedWindow || maxRows >= kUnlimitedWindow) {
+            cols = std::min(100, maxCols);
+        } else {
+            cols = maxCols;
+        }
         rows = ToGridInt(static_cast<double>(std::lround(
             static_cast<double>(cols) * sourceRatio * aspect)));
     }
@@ -521,53 +530,62 @@ void AppendFrameAnsiWide(std::wstring& out, const AsciiFrame& frame,
     }
 
     for (int row = 0; row < frame.rows; ++row) {
-        // Find the last cell that is not a space, so trailing blanks are not
-        // sent to the terminal.
-        int lastCol = frame.cols - 1;
-        while (lastCol >= 0) {
-            const AsciiCell& cell =
-                frame.cells[static_cast<std::size_t>(row) * frame.cols +
-                            lastCol];
-            if (cell.glyph < glyphs.size() && glyphs[cell.glyph] != L" ") {
-                break;
-            }
-            --lastCol;
-        }
-
-        std::uint8_t currentR = 0;
-        std::uint8_t currentG = 0;
-        std::uint8_t currentB = 0;
-        bool haveColor = false;
-
-        for (int col = 0; col <= lastCol; ++col) {
-            const AsciiCell& cell =
-                frame.cells[static_cast<std::size_t>(row) * frame.cols + col];
-            if (cell.glyph >= glyphs.size()) {
-                out.push_back(L' ');
-                continue;
-            }
-            const std::wstring& glyph = glyphs[cell.glyph];
-            if (color && glyph != L" ") {
-                if (!haveColor || cell.r != currentR || cell.g != currentG ||
-                    cell.b != currentB) {
-                    AppendColorCode(out, cell.r, cell.g, cell.b);
-                    currentR = cell.r;
-                    currentG = cell.g;
-                    currentB = cell.b;
-                    haveColor = true;
-                }
-            }
-            out += glyph;
-        }
-
-        if (color && haveColor) {
-            out += L"\x1b[0m";
-        }
-        // Trailing spaces are trimmed, so erase the rest of the line: a longer
-        // previous frame would otherwise leave ghost characters behind.
-        out += L"\x1b[K";
+        AppendFrameRowAnsiWide(out, frame, glyphs, color, row);
         if (row + 1 < frame.rows) {
             out += L"\r\n";
         }
     }
+}
+
+void AppendFrameRowAnsiWide(std::wstring& out, const AsciiFrame& frame,
+                            const std::vector<std::wstring>& glyphs,
+                            bool color, int row) {
+    if (frame.Empty() || glyphs.empty() || row < 0 || row >= frame.rows) {
+        return;
+    }
+
+    // Find the last cell that is not a space, so trailing blanks are not
+    // sent to the terminal.
+    int lastCol = frame.cols - 1;
+    while (lastCol >= 0) {
+        const AsciiCell& cell =
+            frame.cells[static_cast<std::size_t>(row) * frame.cols + lastCol];
+        if (cell.glyph < glyphs.size() && glyphs[cell.glyph] != L" ") {
+            break;
+        }
+        --lastCol;
+    }
+
+    std::uint8_t currentR = 0;
+    std::uint8_t currentG = 0;
+    std::uint8_t currentB = 0;
+    bool haveColor = false;
+
+    for (int col = 0; col <= lastCol; ++col) {
+        const AsciiCell& cell =
+            frame.cells[static_cast<std::size_t>(row) * frame.cols + col];
+        if (cell.glyph >= glyphs.size()) {
+            out.push_back(L' ');
+            continue;
+        }
+        const std::wstring& glyph = glyphs[cell.glyph];
+        if (color && glyph != L" ") {
+            if (!haveColor || cell.r != currentR || cell.g != currentG ||
+                cell.b != currentB) {
+                AppendColorCode(out, cell.r, cell.g, cell.b);
+                currentR = cell.r;
+                currentG = cell.g;
+                currentB = cell.b;
+                haveColor = true;
+            }
+        }
+        out += glyph;
+    }
+
+    if (color && haveColor) {
+        out += L"\x1b[0m";
+    }
+    // Trailing spaces are trimmed, so erase the rest of the line: a longer
+    // previous frame would otherwise leave ghost characters behind.
+    out += L"\x1b[K";
 }
