@@ -17,7 +17,7 @@ struct RenderOptions {
     bool invert = false;
     double aspect = 0.5;    // character cell width / height
     double gamma = 1.0;     // >1 darkens the mid-tones, <1 brightens them
-    int fps = 24;           // video playback cap
+    int fps = 0;            // video playback cap; 0 = follow the video's rate
     bool loop = false;
     // Largest per-channel difference that still reuses the terminal's current
     // color. Only affects live terminal output; 0 sends every color exactly.

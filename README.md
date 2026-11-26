@@ -104,7 +104,7 @@ ASCIIArt <file> [options]             convert / play with options
 | `-i, --invert` | Invert brightness |
 | `-a, --aspect <x>` | Character aspect ratio, range `0.20-1.00`. Measured from the terminal when it supports the xterm queries, otherwise `0.50` |
 | `-g, --gamma <x>` | Gamma correction, default `1.0`; `>1` darker, `<1` brighter |
-| `-f, --fps <n>` | Video frame-rate cap, default 24, range `1-120` |
+| `-f, --fps <n>` | Video frame-rate cap; `0` or `auto` (default) follows the video's own rate, otherwise `1-120` |
 | `--color-tolerance <n>` | Terminal color deadband, default `6`, range `0-255`; larger values send fewer escape sequences and play faster, `0` sends exact colors |
 | `-l, --loop` | Loop the video |
 | `-s, --save <file>` | Save image art; `.txt` = plain text, `.html` = colored web page |

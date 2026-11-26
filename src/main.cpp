@@ -288,16 +288,22 @@ CommandLine ParseCommandLine(int argc, wchar_t** argv) {
         if (take != 0) {
             if (take < 0) {
                 result.valid = false;
-                result.error = Tr(L"--fps needs a number.",
-                                  L"--fps 需要一个数值。");
+                result.error = Tr(L"--fps needs a number or auto.",
+                                  L"--fps 需要一个数值或 auto。");
                 return result;
             }
             int fps = 0;
-            if (!ParseIntValue(value, fps) || fps < 1 || fps > 120) {
+            bool valid = ParseIntValue(value, fps) && fps >= 0 && fps <= 120;
+            if (!valid && (util::EqualsIgnoreCase(value, L"auto") ||
+                           util::EqualsIgnoreCase(value, L"自动"))) {
+                fps = 0;
+                valid = true;
+            }
+            if (!valid) {
                 result.valid = false;
                 result.error = Tr(
-                    L"Frame rate must be an integer between 1 and 120.",
-                    L"帧率必须是 1-120 之间的整数。");
+                    L"Frame rate must be 0-120, or auto to follow the video.",
+                    L"帧率必须是 0-120 之间的整数，或 auto 表示跟随视频原始帧率。");
                 return result;
             }
             result.app.render.fps = fps;

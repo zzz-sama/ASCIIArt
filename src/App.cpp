@@ -136,6 +136,10 @@ std::string SizeText(int width, int height) {
     return Tr8("auto", "自动");
 }
 
+std::string FpsText(int fps) {
+    return fps > 0 ? std::to_string(fps) : Tr8("auto", "自动");
+}
+
 bool AskYesNo(const std::string& prompt) {
     const std::wstring answer = console::ReadLine(prompt);
     return util::EqualsIgnoreCase(answer, L"y") ||
@@ -496,7 +500,8 @@ void PrintCommandLineHelp() {
         "  -i, --invert          invert brightness\n"
         "  -a, --aspect <x>      character aspect ratio; measured from the terminal when supported, 0.50 fallback\n"
         "  -g, --gamma <x>       gamma correction, default 1.0; >1 darker, <1 brighter\n"
-        "  -f, --fps <n>         video playback frame-rate cap, default 24, range 1-120\n"
+        "  -f, --fps <n>         video frame-rate cap; 0 or auto = follow the video (default),\n"
+        "                        otherwise a fixed 1-120\n"
         "      --color-tolerance <n>\n"
         "                        terminal color deadband, default 6, range 0-255;\n"
         "                        larger sends fewer escape sequences, 0 = exact colors\n"
@@ -554,7 +559,8 @@ void PrintCommandLineHelp() {
         "  -i, --invert          反转亮度\n"
         "  -a, --aspect <x>      字符宽高比；终端支持时自动测量，默认 0.50\n"
         "  -g, --gamma <x>       伽马校正，默认 1.0；大于 1 更暗，小于 1 更亮\n"
-        "  -f, --fps <n>         视频播放帧率上限，默认 24，范围 1-120\n"
+        "  -f, --fps <n>         视频播放帧率上限；0 或 auto = 跟随视频原始帧率（默认），\n"
+        "                        也可固定为 1-120\n"
         "      --color-tolerance <n>\n"
         "                        终端输出的颜色死区，默认 6，范围 0-255；\n"
         "                        越大发送的转义序列越少，0 = 精确颜色\n"
@@ -1083,9 +1089,17 @@ bool App::ProcessVideo(const std::wstring& path, bool interactive) {
 
     const bool color = options_.render.color;
     int statusRow = grid.rows + 2;
-    const int targetFps =
-        std::max(1, std::min(120, options_.render.fps));
-    const double frameInterval = 1.0 / static_cast<double>(targetFps);
+    // A zero cap follows the video's own rate. The playback loop drops frames
+    // that miss their time slot, so a terminal that cannot keep up lowers the
+    // effective rate automatically instead of drifting behind the audio.
+    double playbackFps = options_.render.fps > 0
+                             ? static_cast<double>(options_.render.fps)
+                             : info.fps;
+    if (!std::isfinite(playbackFps) || playbackFps <= 0.0) {
+        playbackFps = 24.0;
+    }
+    playbackFps = std::max(1.0, std::min(120.0, playbackFps));
+    const double frameInterval = 1.0 / playbackFps;
 
     const long long cellCount =
         static_cast<long long>(grid.cols) * grid.rows;
@@ -1440,7 +1454,7 @@ void App::DrawMainMenu() const {
                  Tr8("  |  charset ", "  |  字符集 ") +
                  ToUtf8(options_.render.charset.DisplayName()) + "\n");
     console::Out(Tr8("            video fps ", "            视频帧率 ") +
-                 std::to_string(options_.render.fps) +
+                 FpsText(options_.render.fps) +
                  Tr8("  |  aspect ", "  |  宽高比 ") +
                  util::Number(options_.render.aspect, 2) + "\n\n");
     console::Out(Tr8(
@@ -1487,7 +1501,7 @@ void App::ShowSettings() {
         console::Out(Tr8("  5. Aspect ratio   : ", "  5. 字符宽高比    : ") +
                      util::Number(options_.render.aspect, 2) + "\n");
         console::Out(Tr8("  6. Video fps cap  : ", "  6. 视频帧率上限  : ") +
-                     std::to_string(options_.render.fps) + "\n");
+                     FpsText(options_.render.fps) + "\n");
         console::Out(
             Tr8("  7. Large-resolution fit: ", "  7. 大分辨率适配  : ") +
             Tr8(options_.fitConsole ? "on" : "off",
@@ -1561,10 +1575,16 @@ void App::ShowSettings() {
         }
         if (choice == L"6") {
             const std::wstring input = console::ReadLine(Tr8(
-                "  Video frame-rate cap (1-120, default 24): ",
-                "  视频帧率上限（1-120，默认 24）: "));
+                "  Video frame-rate cap 0-120 (0 = auto: follow the video): ",
+                "  视频帧率上限 0-120（0 = 自动：跟随视频原始帧率）: "));
             int value = 0;
-            if (ParseInt(input, value) && value >= 1 && value <= 120) {
+            bool valid = ParseInt(input, value) && value >= 0 && value <= 120;
+            if (!valid && (util::EqualsIgnoreCase(input, L"auto") ||
+                           util::EqualsIgnoreCase(input, L"自动"))) {
+                value = 0;
+                valid = true;
+            }
+            if (valid) {
                 options_.render.fps = value;
             } else {
                 console::Info(Tr8("  Invalid input; the frame rate is "
