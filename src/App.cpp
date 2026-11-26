@@ -328,9 +328,9 @@ void AppendInt(std::wstring& out, int value) {
 // caller and reused for every frame so the large allocations happen once.
 void BuildVideoScreen(std::wstring& screen, const AsciiFrame& frame,
                       const std::vector<std::wstring>& glyphs, bool color,
-                      int statusRow, const std::wstring& status,
-                      bool compact, bool clearFirst,
-                      std::vector<std::wstring>& rowCache,
+                      int colorTolerance, int statusRow,
+                      const std::wstring& status, bool compact,
+                      bool clearFirst, std::vector<std::wstring>& rowCache,
                       std::wstring& statusCache) {
     screen.clear();
     // Synchronized output: the terminal buffers the whole frame and presents
@@ -352,7 +352,8 @@ void BuildVideoScreen(std::wstring& screen, const AsciiFrame& frame,
     std::wstring rowText;
     for (int row = 0; row < frame.rows; ++row) {
         rowText.clear();
-        AppendFrameRowAnsiWide(rowText, frame, glyphs, color, row);
+        AppendFrameRowAnsiWide(rowText, frame, glyphs, color, colorTolerance,
+                               row);
         if (!clearFirst && rowText == rowCache[row]) {
             continue;
         }
@@ -496,6 +497,9 @@ void PrintCommandLineHelp() {
         "  -a, --aspect <x>      character aspect ratio; measured from the terminal when supported, 0.50 fallback\n"
         "  -g, --gamma <x>       gamma correction, default 1.0; >1 darker, <1 brighter\n"
         "  -f, --fps <n>         video playback frame-rate cap, default 24, range 1-120\n"
+        "      --color-tolerance <n>\n"
+        "                        terminal color deadband, default 6, range 0-255;\n"
+        "                        larger sends fewer escape sequences, 0 = exact colors\n"
         "  -l, --loop            loop the video\n"
         "  -s, --save <file>     save image art (.txt or .html; .txt when no extension)\n"
         "      --no-display      save only, do not display image art\n"
@@ -551,6 +555,9 @@ void PrintCommandLineHelp() {
         "  -a, --aspect <x>      字符宽高比；终端支持时自动测量，默认 0.50\n"
         "  -g, --gamma <x>       伽马校正，默认 1.0；大于 1 更暗，小于 1 更亮\n"
         "  -f, --fps <n>         视频播放帧率上限，默认 24，范围 1-120\n"
+        "      --color-tolerance <n>\n"
+        "                        终端输出的颜色死区，默认 6，范围 0-255；\n"
+        "                        越大发送的转义序列越少，0 = 精确颜色\n"
         "  -l, --loop            循环播放视频\n"
         "  -s, --save <文件>     保存图片字符画（.txt 或 .html；无扩展名时保存为 .txt）\n"
         "      --no-display      只保存，不显示图片字符画\n"
@@ -1151,7 +1158,8 @@ bool App::ProcessVideo(const std::wstring& path, bool interactive) {
     auto repaint = [&](double position, bool pausedNow, bool clearFirst) {
         RenderAsciiInto(videoFrame, options_.render.charset, grid,
                         options_.render, ascii);
-        BuildVideoScreen(screen, ascii, wideGlyphs, color, statusRow,
+        BuildVideoScreen(screen, ascii, wideGlyphs, color,
+                         options_.render.colorTolerance, statusRow,
                          util::ToWide(MakeStatusLine(position, info, pausedNow,
                                                      options_.render.aspect)),
                          compact, clearFirst, rowCache, statusCache);
@@ -1485,6 +1493,11 @@ void App::ShowSettings() {
             Tr8(options_.fitConsole ? "on" : "off",
                 options_.fitConsole ? "开" : "关") +
             "\n");
+        console::Out(
+            Tr8("  8. Color deadband : ", "  8. 颜色死区      : ") +
+            std::to_string(options_.render.colorTolerance) +
+            Tr8("  (0 = exact, larger = faster)\n",
+                "  （0 = 精确颜色，越大输出越快）\n"));
         console::Out(Tr8(
             "\n"
             "  0. Back to main menu\n\n",
@@ -1492,7 +1505,7 @@ void App::ShowSettings() {
             "  0. 返回主菜单\n\n"));
 
         const std::wstring choice = console::ReadLine(
-            Tr8("  Choose [0-7]: ", "  请选择 [0-7]: "));
+            Tr8("  Choose [0-8]: ", "  请选择 [0-8]: "));
         if (choice == L"0" || choice.empty()) {
             return;
         }
@@ -1563,6 +1576,21 @@ void App::ShowSettings() {
         }
         if (choice == L"7") {
             options_.fitConsole = !options_.fitConsole;
+            continue;
+        }
+        if (choice == L"8") {
+            const std::wstring input = console::ReadLine(Tr8(
+                "  Color deadband 0-255 (0 = exact colors, larger = faster): ",
+                "  颜色死区 0-255（0 = 精确颜色，越大输出越快）: "));
+            int value = 0;
+            if (ParseInt(input, value) && value >= 0 && value <= 255) {
+                options_.render.colorTolerance = value;
+            } else {
+                console::Info(Tr8(
+                    "  Invalid input; the color deadband is unchanged.\n",
+                    "  输入无效，颜色死区保持不变。\n"));
+                console::Pause();
+            }
             continue;
         }
     }

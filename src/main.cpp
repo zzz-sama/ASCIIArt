@@ -304,6 +304,27 @@ CommandLine ParseCommandLine(int argc, wchar_t** argv) {
             continue;
         }
 
+        take = TakeValue(arg, L"--color-tolerance", argc, argv, i, value);
+        if (take != 0) {
+            if (take < 0) {
+                result.valid = false;
+                result.error = Tr(L"--color-tolerance needs a number.",
+                                  L"--color-tolerance 需要一个数值。");
+                return result;
+            }
+            int tolerance = 0;
+            if (!ParseIntValue(value, tolerance) || tolerance < 0 ||
+                tolerance > 255) {
+                result.valid = false;
+                result.error = Tr(
+                    L"Color deadband must be an integer between 0 and 255.",
+                    L"颜色死区必须是 0-255 之间的整数。");
+                return result;
+            }
+            result.app.render.colorTolerance = tolerance;
+            continue;
+        }
+
         take = TakeValue(arg, L"--aspect", argc, argv, i, value);
         if (take != 0) {
             if (take < 0) {

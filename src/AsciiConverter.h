@@ -19,6 +19,10 @@ struct RenderOptions {
     double gamma = 1.0;     // >1 darkens the mid-tones, <1 brightens them
     int fps = 24;           // video playback cap
     bool loop = false;
+    // Largest per-channel difference that still reuses the terminal's current
+    // color. Only affects live terminal output; 0 sends every color exactly.
+    // A larger deadband means fewer escape sequences and faster playback.
+    int colorTolerance = 6;
 };
 
 struct GridSize {
@@ -78,11 +82,14 @@ std::vector<std::wstring> WideGlyphs(const Charset& charset);
 // WriteConsoleW avoids building a large UTF-8 copy and converting it again
 // for every video frame.
 void AppendFrameAnsiWide(std::wstring& out, const AsciiFrame& frame,
-                         const std::vector<std::wstring>& glyphs, bool color);
+                         const std::vector<std::wstring>& glyphs, bool color,
+                         int colorTolerance);
 
 // Appends a single row as UTF-16 ANSI without a cursor position or newline.
 // Each row is self-contained (color state is reset at its start), so the video
 // player can address rows absolutely and skip rows that did not change.
+// colorTolerance is the largest per-channel difference that keeps the current
+// color instead of emitting a new escape sequence.
 void AppendFrameRowAnsiWide(std::wstring& out, const AsciiFrame& frame,
                             const std::vector<std::wstring>& glyphs,
-                            bool color, int row);
+                            bool color, int colorTolerance, int row);

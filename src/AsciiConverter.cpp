@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <limits>
 
 namespace {
@@ -524,13 +525,15 @@ std::vector<std::wstring> WideGlyphs(const Charset& charset) {
 }
 
 void AppendFrameAnsiWide(std::wstring& out, const AsciiFrame& frame,
-                         const std::vector<std::wstring>& glyphs, bool color) {
+                         const std::vector<std::wstring>& glyphs, bool color,
+                         int colorTolerance) {
     if (frame.Empty() || glyphs.empty()) {
         return;
     }
 
     for (int row = 0; row < frame.rows; ++row) {
-        AppendFrameRowAnsiWide(out, frame, glyphs, color, row);
+        AppendFrameRowAnsiWide(out, frame, glyphs, color, colorTolerance,
+                               row);
         if (row + 1 < frame.rows) {
             out += L"\r\n";
         }
@@ -539,7 +542,7 @@ void AppendFrameAnsiWide(std::wstring& out, const AsciiFrame& frame,
 
 void AppendFrameRowAnsiWide(std::wstring& out, const AsciiFrame& frame,
                             const std::vector<std::wstring>& glyphs,
-                            bool color, int row) {
+                            bool color, int colorTolerance, int row) {
     if (frame.Empty() || glyphs.empty() || row < 0 || row >= frame.rows) {
         return;
     }
@@ -561,6 +564,13 @@ void AppendFrameRowAnsiWide(std::wstring& out, const AsciiFrame& frame,
     std::uint8_t currentB = 0;
     bool haveColor = false;
 
+    // A difference within the deadband is invisible on a character grid.
+    // Keeping the previous color avoids emitting an SGR sequence for nearly
+    // every cell of a live-action frame, which is the dominant cost of a video
+    // update. The drift is bounded by the deadband because the comparison is
+    // against the color actually shown, not against the previous cell.
+    colorTolerance = std::max(0, std::min(255, colorTolerance));
+
     for (int col = 0; col <= lastCol; ++col) {
         const AsciiCell& cell =
             frame.cells[static_cast<std::size_t>(row) * frame.cols + col];
@@ -570,8 +580,13 @@ void AppendFrameRowAnsiWide(std::wstring& out, const AsciiFrame& frame,
         }
         const std::wstring& glyph = glyphs[cell.glyph];
         if (color && glyph != L" ") {
-            if (!haveColor || cell.r != currentR || cell.g != currentG ||
-                cell.b != currentB) {
+            if (!haveColor ||
+                std::abs(static_cast<int>(cell.r) - currentR) >
+                    colorTolerance ||
+                std::abs(static_cast<int>(cell.g) - currentG) >
+                    colorTolerance ||
+                std::abs(static_cast<int>(cell.b) - currentB) >
+                    colorTolerance) {
                 AppendColorCode(out, cell.r, cell.g, cell.b);
                 currentR = cell.r;
                 currentG = cell.g;

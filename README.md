@@ -78,7 +78,7 @@ From the interactive menu:
 
 1. Choose an image: file dialog → convert → ask whether to save as TXT / HTML.
 2. Choose a video: file dialog → play in the console.
-3. Conversion settings: output size, color, invert, charset, aspect ratio, video frame rate, large-resolution fitting.
+3. Conversion settings: output size, color, invert, charset, aspect ratio, video frame rate, color deadband, large-resolution fitting.
 4. Help: command-line help and interactive tips.
 5. Switch language: toggle between English and Chinese; the UI refreshes immediately.
 
@@ -105,6 +105,7 @@ ASCIIArt <file> [options]             convert / play with options
 | `-a, --aspect <x>` | Character aspect ratio, range `0.20-1.00`. Measured from the terminal when it supports the xterm queries, otherwise `0.50` |
 | `-g, --gamma <x>` | Gamma correction, default `1.0`; `>1` darker, `<1` brighter |
 | `-f, --fps <n>` | Video frame-rate cap, default 24, range `1-120` |
+| `--color-tolerance <n>` | Terminal color deadband, default `6`, range `0-255`; larger values send fewer escape sequences and play faster, `0` sends exact colors |
 | `-l, --loop` | Loop the video |
 | `-s, --save <file>` | Save image art; `.txt` = plain text, `.html` = colored web page |
 | `--no-display` | Save only; do not show image art in the console |
